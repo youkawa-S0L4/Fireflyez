@@ -1,4 +1,4 @@
-/* 3DMigoto reconstruction viewer for Vân Nguyệt Các (v42).
+/* 3DMigoto reconstruction viewer for Vân Nguyệt Các (v44).
  * A: Dual source merge (Base face + Mod body)
  * B: Apply reconstructed body onto currently open PMX (overlay, keeps animation)
  * Supports classic VB/FMT and HSR Position/Blend/Texcoord.buf + basic DDS.
@@ -29,7 +29,9 @@
 #migoto .actions{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
 #migoto .log{white-space:pre-wrap;font:11px ui-monospace,monospace;max-height:180px;overflow:auto;color:#cbd5e1}
 #migoto .src{display:flex;gap:6px;margin-bottom:8px}
-@media(max-width:700px){
+#migoto #mg-x{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:101;width:44px;height:44px;padding:0;font-size:22px;line-height:1;background:#6651b8;border-color:#8b78df}
+#migoto .mh{padding-right:60px;min-height:52px}
+@media(max-width:900px),(pointer:coarse){
   #migoto .body{grid-template-columns:1fr;grid-template-rows:minmax(220px,46vh) 1fr}
   #migoto .side{border-left:0;border-top:1px solid #334155}
 }`;
@@ -46,6 +48,7 @@
   <strong>3DMigoto · v44 · Ghép mod + gốc</strong>
   <button id="mg-close">Đóng</button>
 </header>
+<button id="mg-x" aria-label="Đóng" title="Đóng">✕</button>
 <div class="body">
   <div id="mg-view"></div>
   <aside class="side">
@@ -73,6 +76,9 @@
 </div>`;
     document.body.append(root);
     $('#mg-close').onclick = close;
+    $('#mg-x').onclick = close;
+    addEventListener('keydown', e => { if (e.key === 'Escape' && root.classList.contains('on')) close(); });
+    addEventListener('popstate', () => { if (root.classList.contains('on')) close(true); });
     $('#mg-build').onclick = () => build();
     $('#mg-reset').onclick = resetCamera;
     $('#mg-export').onclick = exportGLB;
@@ -119,13 +125,16 @@
   function open() {
     addUI();
     root.classList.add('on');
+    try { history.pushState({ migoto: 1 }, ''); } catch (e) {}
     initView();
     // preload BC7 decoder in background
     getBC7Decoder().catch(() => {});
   }
 
-  function close() {
+  function close(fromPop) {
+    if (!root.classList.contains('on')) return;
     root.classList.remove('on');
+    if (fromPop !== true) { try { if (history.state && history.state.migoto) history.back(); } catch (e) {} }
     if (raf) cancelAnimationFrame(raf);
     animating = false;
     urls.forEach(u => URL.revokeObjectURL(u));
