@@ -1,5 +1,5 @@
 /* Service worker – Vân Nguyệt Các. Đổi V khi muốn ép xóa cache cũ. */
-const V = 'vnc-v46';
+const V = 'vnc-v47';
 const SHELL = ['./', './index.html', './3dmigoto.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './loading.webp', './mods/mod-core.js', './mods/mod-store.js', './mods/mod-ui.js', './mobile.js', './extras.js'];
 const CDN = ['cdn.jsdelivr.net', 'fastly.jsdelivr.net', 'gcore.jsdelivr.net', 'cdnjs.cloudflare.com', 'unpkg.com'];
 

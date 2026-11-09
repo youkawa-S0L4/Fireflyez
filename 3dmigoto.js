@@ -7,7 +7,7 @@
   'use strict';
   const $ = s => document.querySelector(s);
   let root, scene, camera, renderer, raf, filesBase = [], filesMod = [], urls = [], modelRoot = null, animating = false;
-  let activeBag = 'mod'; // which list is being filled by file picker
+  let activeTab = 'mod'; // which list is being filled by file picker (mod | base)
 
   const css = `#migoto{position:fixed;inset:0;z-index:100;background:#080b12f2;color:#edf2ff;display:none;font:14px system-ui}
 #migoto.on{display:flex;flex-direction:column}
