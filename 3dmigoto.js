@@ -18,8 +18,9 @@
 #migoto button:disabled{opacity:.45;cursor:default}
 #migoto button.tab{padding:6px 10px;opacity:.7}
 #migoto button.tab.on{opacity:1;background:#334155;border-color:#8b78df}
-#migoto .body{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:0;flex:1}
-#migoto canvas{width:100%;height:100%;display:block;touch-action:none}
+#migoto .body{display:grid;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:minmax(0,1fr);min-height:0;flex:1;overflow:hidden}
+#migoto #mg-view{position:relative;overflow:hidden;min-width:0;min-height:0}
+#migoto canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none}
 #migoto .side{overflow:auto;padding:12px;background:#111827;border-left:1px solid #334155}
 #migoto .drop{border:1px dashed #64748b;border-radius:12px;padding:14px;text-align:center;margin-bottom:8px;color:#cbd5e1}
 #migoto .drop.on{border-color:#8b78df;background:#1e293b88}
@@ -32,7 +33,7 @@
 #migoto #mg-x{position:fixed;top:max(8px,env(safe-area-inset-top));right:8px;z-index:101;width:44px;height:44px;padding:0;font-size:22px;line-height:1;background:#6651b8;border-color:#8b78df}
 #migoto .mh{padding-right:60px;min-height:52px}
 @media(max-width:900px),(pointer:coarse){
-  #migoto .body{grid-template-columns:1fr;grid-template-rows:minmax(220px,46vh) 1fr}
+  #migoto .body{grid-template-columns:1fr;grid-template-rows:minmax(200px,42vh) minmax(0,1fr)}
   #migoto .side{border-left:0;border-top:1px solid #334155}
 }`;
 
