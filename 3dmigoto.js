@@ -7,6 +7,7 @@
   'use strict';
   const $ = s => document.querySelector(s);
   let root, scene, camera, renderer, raf, filesBase = [], filesMod = [], urls = [], modelRoot = null, animating = false;
+  let loopFn = null, tog = { tits: 0, ass: 0 }, applied = false, texCache = new WeakMap();
   let activeTab = 'mod'; // which list is being filled by file picker (mod | base)
 
   const css = `#migoto{position:fixed;inset:0;z-index:100;background:#080b12f2;color:#edf2ff;display:none;font:14px system-ui}
@@ -60,7 +61,7 @@
     <div class="drop" id="mg-drop">
       <span id="mg-drop-label">Chọn / thả package <b>Mod</b> (Body/Hair)</span><br>
       ZIP hoặc file .buf/.ib/.dds/.vb/.fmt<br>
-      <input id="mg-files" type="file" multiple accept=".zip,.vb,.ib,.fmt,.ini,.buf,.dds,.png,.jpg,.jpeg,.tga,.txt">
+      <input id="mg-files" type="file" multiple accept=".zip,.rar,.7z,.vb,.ib,.fmt,.ini,.buf,.dds,.png,.jpg,.jpeg,.tga,.txt">
     </div>
     <div class="muted" id="mg-counts">Mod: 0 file · Gốc: 0 file</div>
     <div class="actions">
@@ -69,7 +70,13 @@
       <button id="mg-export" disabled>Xuất GLB</button>
       <button id="mg-apply" disabled title="Cần mở PMX gốc trước">Áp vào PMX đang mở</button>
       <button id="mg-clear-apply" title="Gỡ overlay body 3DM">Gỡ overlay</button>
+      <button id="mg-clear-tab" title="Xoá file của tab đang chọn">Xoá tab này</button>
     </div>
+    <div class="actions" id="mg-toggles">
+      <button id="mg-tits" disabled title="Giống phím H của mod">Ngực: tắt (H)</button>
+      <button id="mg-ass" disabled title="Giống phím N của mod">Mông: tắt (N)</button>
+    </div>
+    <div class="muted" id="mg-variant"></div>
     <div class="stat" id="mg-stats">Chưa có dữ liệu.\n\nCách dùng nhanh:\n1. Tab Mod → nạp package bikini/body\n2. Tab Gốc → nạp dump full (có Face/Head)\n3. Tái dựng → Áp vào PMX đang mở</div>
     <div class="muted">Face/Head ưu tiên từ Gốc · Body ưu tiên từ Mod · Hair ưu tiên Mod rồi Gốc. Animation vẫn từ PMX gốc.</div>
     <div class="log" id="mg-log"></div>
@@ -81,15 +88,18 @@
     addEventListener('keydown', e => { if (e.key === 'Escape' && root.classList.contains('on')) close(); });
     addEventListener('popstate', () => { if (root.classList.contains('on')) close(true); });
     $('#mg-build').onclick = () => build();
+    $('#mg-clear-tab').onclick = clearTab;
+    updateToggleUI();
     $('#mg-reset').onclick = resetCamera;
     $('#mg-export').onclick = exportGLB;
-    $('#mg-apply').onclick = applyToPMX;
+    $('#mg-apply').onclick = () => applyToPMX();
     $('#mg-clear-apply').onclick = () => {
+      applied = false;
       if (window.__vncClear3dmBody) window.__vncClear3dmBody();
       else log('Chưa có bridge PMX.');
     };
     const inp = $('#mg-files');
-    inp.onchange = () => ingest(inp.files);
+    inp.onchange = async () => { const fl = Array.from(inp.files || []); inp.value = ''; await ingest(fl); };
     const drop = $('#mg-drop');
     drop.ondragover = e => { e.preventDefault(); drop.classList.add('on'); };
     drop.ondragleave = () => drop.classList.remove('on');
@@ -98,8 +108,51 @@
       drop.classList.remove('on');
       ingest(e.dataTransfer.files);
     };
+    $('#mg-tits').onclick = () => toggleSize('tits');
+    $('#mg-ass').onclick = () => toggleSize('ass');
+    addEventListener('keydown', e => {
+      if (!root.classList.contains('on') || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (/^(input|textarea|select)$/i.test((e.target && e.target.tagName) || '')) return;
+      if (e.key === 'h' || e.key === 'H') toggleSize('tits');
+      else if (e.key === 'n' || e.key === 'N') toggleSize('ass');
+    });
     $('#mg-tab-mod').onclick = () => setTab('mod');
     $('#mg-tab-base').onclick = () => setTab('base');
+  }
+
+  // Giống merged.ini: $swapvar = $tits + $ass (tits: 0/1, ass: 0/2) → chọn thư mục f000(swapvar+1)
+  function toggleSize(k) {
+    tog[k] = tog[k] ? 0 : 1;
+    updateToggleUI();
+    if (modelRoot) {
+      build({ keepCam: true }).then(() => { if (applied) applyToPMX(true); });
+    }
+  }
+
+  function updateToggleUI() {
+    const t = $('#mg-tits'), a = $('#mg-ass');
+    if (!t || !a) return;
+    t.textContent = 'Ngực: ' + (tog.tits ? 'bật' : 'tắt') + ' (H)';
+    a.textContent = 'Mông: ' + (tog.ass ? 'bật' : 'tắt') + ' (N)';
+    t.classList.toggle('on', !!tog.tits); a.classList.toggle('on', !!tog.ass);
+  }
+
+  const natCmp = (x, y) => x.localeCompare(y, undefined, { numeric: true });
+
+  // Chọn biến thể body-size cho 1 nguồn; phần thiếu (tóc, texture...) lấy từ biến thể đầu tiên
+  function selectVariant(groups) {
+    const variants = [...new Set(groups.map(g => g.variant))].sort(natCmp);
+    if (variants.length <= 1) return { groups, variants, sel: variants[0] || '' };
+    const idx = Math.min((tog.tits ? 1 : 0) + (tog.ass ? 2 : 0), variants.length - 1);
+    const sel = variants[idx], first = variants[0];
+    const keys = [...new Set(groups.map(g => g.key))];
+    const out = [];
+    for (const k of keys) {
+      const g = groups.find(x => x.key === k && x.variant === sel) ||
+        groups.find(x => x.key === k && x.variant === first) || groups.find(x => x.key === k);
+      if (g) out.push(g);
+    }
+    return { groups: out, variants, sel };
   }
 
   function setTab(tab) {
@@ -130,6 +183,9 @@
     initView();
     // preload BC7 decoder in background
     getBC7Decoder().catch(() => {});
+    if (!filesMod.length && !filesBase.length) {
+      restoreStore().then(ok => { if (ok) build({ keepLog: true }); });
+    }
   }
 
   function close(fromPop) {
@@ -143,7 +199,7 @@
   }
 
   function initView() {
-    if (renderer) return;
+    if (renderer) { if (!animating && loopFn) { animating = true; loopFn(); } return; }
     const view = $('#mg-view');
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0b0f18);
@@ -176,7 +232,7 @@
     };
     new ResizeObserver(resize).observe(view); resize();
     const loop = () => { raf = requestAnimationFrame(loop); renderer.render(scene, camera); };
-    animating = true; loop();
+    loopFn = loop; animating = true; loop();
   }
 
   async function ingest(fileList) {
@@ -185,42 +241,22 @@
     log('Nạp vào ' + (activeTab === 'mod' ? 'Mod' : 'Gốc') + ': ' + arr.length + ' mục…');
     const out = [];
     for (const f of arr) {
-      if (/\.zip$/i.test(f.name)) {
+      if (/\.(zip|rar|7z)$/i.test(f.name)) {
         try {
-          const zip = await JSZip.loadAsync(f);
+          log('Đang giải nén ' + f.name + '…');
+          const zip = (window.VNArchive && /\.(rar|7z)$/i.test(f.name)) ? await window.VNArchive.load(f) : await JSZip.loadAsync(f);
           const names = Object.keys(zip.files).filter(n => !zip.files[n].dir);
-          // Detect body-size variants like FireflyModf0001 / f0002
+          // Giữ TẤT CẢ biến thể body-size (FireflyModf0001..0004); chọn lúc dựng bằng nút Ngực/Mông
           const variantFolders = new Set();
           for (const name of names) {
             const parts = name.replace(/\\/g, '/').split('/');
-            for (const part of parts) {
-              if (/f0*\d+$/i.test(part) || /modf0*\d+/i.test(part) || /size|variant|body\d/i.test(part))
-                variantFolders.add(part);
-            }
+            parts.pop();
+            const par = parts.filter(Boolean).pop() || '';
+            if (/f0*\d+$/i.test(par) || /size|variant|body\d/i.test(par)) variantFolders.add(par);
           }
-          // Prefer variant that has Diffuse textures; else first folder; else all
-          let prefer = null;
-          if (variantFolders.size > 1) {
-            const scored = [];
-            for (const vf of variantFolders) {
-              let score = 0, hasDiffuse = false, hasPos = false;
-              for (const name of names) {
-                if (!name.includes(vf)) continue;
-                if (/diffuse|albedo|color/i.test(name) && /\.dds$/i.test(name)) { hasDiffuse = true; score += 10; }
-                if (/Position\.buf$/i.test(name)) { hasPos = true; score += 3; }
-                if (/\.ib$/i.test(name)) score += 1;
-              }
-              scored.push({ vf, score, hasDiffuse, hasPos });
-            }
-            scored.sort((a, b) => b.score - a.score);
-            prefer = scored[0].vf;
-            log('Phát hiện ' + variantFolders.size + ' body-size; chọn: ' + prefer +
-              ' (có diffuse: ' + scored[0].hasDiffuse + ')');
-            for (const s of scored) log('  · ' + s.vf + ' score=' + s.score);
-          }
+          if (variantFolders.size > 1) log('Phát hiện ' + variantFolders.size + ' body-size: ' + [...variantFolders].sort(natCmp).join(', '));
           for (const name of names) {
-            if (prefer && !name.includes(prefer) && [...variantFolders].some(vf => name.includes(vf)))
-              continue; // skip other variants
+            if (/lightmap.*\.dds$/i.test(name)) continue; // không dùng, tiết kiệm RAM
             const entry = zip.files[name];
             const blob = await entry.async('blob');
             // Keep unique basename; if collision, prefix with parent folder
@@ -230,19 +266,80 @@
             // Always use flat basename after variant filter (no collision within one variant)
             const file = new File([blob], base, { type: blob.type || 'application/octet-stream' });
             file._zipPath = name;
-            file._variant = prefer || parent;
+            file._variant = variantFolders.has(parent) ? parent : '';
             out.push(file);
           }
-          log('ZIP → ' + out.length + ' file' + (prefer ? ' (variant ' + prefer + ')' : ''));
-        } catch (e) { log('Lỗi ZIP: ' + e.message); }
+          log('ZIP → ' + out.length + ' file');
+        } catch (e) { log('Lỗi giải nén ' + f.name + ': ' + (e && e.message || e)); }
       } else out.push(f);
     }
-    if (activeTab === 'mod') filesMod = out; else filesBase = out;
+    if (!out.length) { log('Không có file hợp lệ để nạp.'); return; }
+    // Tự nhận Mod/Gốc theo nội dung: chỉ có Face/Head → Gốc; chỉ có Body/Hair → Mod
+    const kinds = new Set(groupHSR(out).map(x => x.part));
+    let target = activeTab;
+    if (kinds.has('face') && !kinds.has('body')) target = 'base';
+    else if (kinds.has('body') && !kinds.has('face')) target = 'mod';
+    if (target !== activeTab) { log('Tự nhận: đây là package ' + (target === 'mod' ? 'Mod' : 'Gốc') + ' → chuyển tab'); setTab(target); }
+    // Cộng dồn (không ghi đè): nạp nhiều ZIP/file liên tiếp đều giữ lại
+    if (target === 'mod') filesMod = mergeFiles(filesMod, out); else filesBase = mergeFiles(filesBase, out);
     updateCounts();
-    log('Đã nạp ' + out.length + ' file vào ' + (activeTab === 'mod' ? 'Mod' : 'Gốc'));
-    const texN = out.filter(f => /\.(dds|png|jpe?g)$/i.test(f.name)).length;
-    $('#mg-stats').textContent = 'Mod: ' + filesMod.length + ' · Gốc: ' + filesBase.length +
-      '\nTexture trong lần nạp: ' + texN + '\nBấm Tái dựng (ghép).';
+    log('Đã nạp ' + out.length + ' file vào ' + (target === 'mod' ? 'Mod' : 'Gốc'));
+    saveStore();
+    await build({ keepLog: true });
+  }
+
+  function mergeFiles(list, add) {
+    const m = new Map();
+    for (const f of list) m.set((f._variant || '') + '/' + f.name, f);
+    for (const f of add) m.set((f._variant || '') + '/' + f.name, f);
+    return [...m.values()];
+  }
+
+  // ---- Lưu lần nạp trước (IndexedDB) để mở lại không phải chọn file nữa ----
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open('migoto-store', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbOp(mode, fn) {
+    const db = await idb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('kv', mode), st = tx.objectStore('kv'), rq = fn(st);
+      tx.oncomplete = () => { db.close(); res(rq && rq.result); }; tx.onerror = () => { db.close(); rej(tx.error); };
+    });
+  }
+  const pack = list => list.map(f => ({ name: f.name, variant: f._variant || '', zip: f._zipPath || '', blob: f }));
+  const unpack = arr => (arr || []).map(o => {
+    const f = new File([o.blob], o.name, { type: o.blob.type || 'application/octet-stream' });
+    f._variant = o.variant; f._zipPath = o.zip; return f;
+  });
+  async function saveStore() {
+    try {
+      await idbOp('readwrite', st => { st.put(pack(filesMod), 'mod'); return st.put(pack(filesBase), 'base'); });
+    } catch (e) { log('Không lưu được bộ nhớ: ' + (e && e.message || e)); }
+  }
+  async function restoreStore() {
+    try {
+      const m = await idbOp('readonly', st => st.get('mod')), b = await idbOp('readonly', st => st.get('base'));
+      if (!(m && m.length) && !(b && b.length)) return false;
+      filesMod = unpack(m); filesBase = unpack(b);
+      updateCounts();
+      log('Khôi phục lần nạp trước: Mod ' + filesMod.length + ' · Gốc ' + filesBase.length + ' file');
+      return true;
+    } catch (e) { return false; }
+  }
+  async function clearTab() {
+    if (activeTab === 'mod') filesMod = []; else filesBase = [];
+    texCache = new WeakMap();
+    updateCounts(); await saveStore();
+    log('Đã xoá ' + (activeTab === 'mod' ? 'Mod' : 'Gốc'));
+    if (filesMod.length || filesBase.length) await build({ keepLog: true });
+    else {
+      if (modelRoot) { scene.remove(modelRoot); modelRoot = null; }
+      $('#mg-stats').textContent = 'Chưa có dữ liệu.';
+    }
   }
 
   // ---- DDS (same as v41) ----
@@ -353,43 +450,83 @@
       } else throw new Error('FourCC chưa hỗ trợ');
     } else if (pfFlags & DDPF_RGB) format = 'rgba';
     else throw new Error('Pixel format không hỗ trợ');
-    const rgba = new Uint8Array(width * height * 4);
+    // Giới hạn kích thước texture (ảnh 8192x4096 làm điện thoại đơ/hết RAM)
+    const MAX_TEX = 2048;
+    const f = Math.max(1, Math.ceil(Math.max(width, height) / MAX_TEX));
+    const ow = Math.max(1, Math.floor(width / f)), oh = Math.max(1, Math.floor(height / f));
+    let rgba;
     if (format === 'bc7') {
-      // data after header
-      const blockBytes = Math.max(1, Math.ceil(width / 4)) * Math.max(1, Math.ceil(height / 4)) * 16;
-      const blockData = new Uint8Array(buf, dataOffset, Math.min(blockBytes, buf.byteLength - dataOffset));
+      // Giải mã theo dải 256px + thu nhỏ ngay → không cần cấp phát ảnh full-size
+      const bw = Math.ceil(width / 4), bh = Math.ceil(height / 4);
+      const blockData = new Uint8Array(buf, dataOffset, Math.min(bw * bh * 16, buf.byteLength - dataOffset));
+      rgba = new Uint8Array(ow * oh * 4);
+      const stripBlocks = f * Math.max(1, Math.floor(64 / f)); // bội của f
       try {
-        const decoded = await decodeBC7ToRGBA(blockData, width, height);
-        if (!decoded) { log('BC7 decode null: ' + file.name); return null; }
-        rgba.set(decoded);
-        log('DDS BC7 OK: ' + file.name + ' (' + width + '×' + height + ')');
+        for (let by0 = 0; by0 < bh; by0 += stripBlocks) {
+          const rows = Math.min(stripBlocks, bh - by0), sh = rows * 4;
+          const strip = blockData.subarray(by0 * bw * 16, (by0 + rows) * bw * 16);
+          const bgra = await (await getBC7Decoder()).decode_bc7(strip, width, sh);
+          if (!bgra) { log('BC7 decode null: ' + file.name); return null; }
+          const y0 = by0 * 4 / f | 0, n = f * f;
+          for (let oy = 0; oy < Math.floor(sh / f) && y0 + oy < oh; oy++) {
+            for (let ox = 0; ox < ow; ox++) {
+              let r = 0, g = 0, bl = 0, al = 0;
+              for (let dy = 0; dy < f; dy++) {
+                let o = ((oy * f + dy) * width + ox * f) * 4;
+                for (let dx = 0; dx < f; dx++, o += 4) { bl += bgra[o]; g += bgra[o + 1]; r += bgra[o + 2]; al += bgra[o + 3]; }
+              }
+              const d = ((y0 + oy) * ow + ox) * 4;
+              rgba[d] = r / n; rgba[d + 1] = g / n; rgba[d + 2] = bl / n; rgba[d + 3] = al / n;
+            }
+          }
+        }
+        log('DDS BC7 OK: ' + file.name + ' (' + width + '×' + height + (f > 1 ? ' → ' + ow + '×' + oh : '') + ')');
       } catch (e) {
         log('BC7 decode lỗi (' + file.name + '): ' + (e && e.message ? e.message : e));
         return null;
       }
-    } else if (format === 'rgba') {
-      const bpp = (pfFlags & DDPF_ALPHAPIXELS) ? 4 : 3; let src = dataOffset;
-      for (let i = 0; i < width * height; i++) {
-        rgba[i * 4] = dv.getUint8(src); rgba[i * 4 + 1] = dv.getUint8(src + 1); rgba[i * 4 + 2] = dv.getUint8(src + 2);
-        rgba[i * 4 + 3] = bpp === 4 ? dv.getUint8(src + 3) : 255; src += bpp;
-      }
     } else {
-      const blocksX = Math.max(1, Math.ceil(width / 4)), blocksY = Math.max(1, Math.ceil(height / 4));
-      let src = dataOffset;
-      for (let by = 0; by < blocksY; by++) for (let bx = 0; bx < blocksX; bx++) {
-        const block = new Uint8Array(buf, src, blockSize); src += blockSize;
-        if (format === 'dxt1') decodeDXT1Block(block, rgba, bx * 4, by * 4, width);
-        else decodeDXT5Block(block, rgba, bx * 4, by * 4, width);
+      const full = new Uint8Array(width * height * 4);
+      if (format === 'rgba') {
+        const bpp = (pfFlags & DDPF_ALPHAPIXELS) ? 4 : 3; let src = dataOffset;
+        for (let i = 0; i < width * height; i++) {
+          full[i * 4] = dv.getUint8(src); full[i * 4 + 1] = dv.getUint8(src + 1); full[i * 4 + 2] = dv.getUint8(src + 2);
+          full[i * 4 + 3] = bpp === 4 ? dv.getUint8(src + 3) : 255; src += bpp;
+        }
+      } else {
+        const blocksX = Math.max(1, Math.ceil(width / 4)), blocksY = Math.max(1, Math.ceil(height / 4));
+        let src = dataOffset;
+        for (let by = 0; by < blocksY; by++) for (let bx = 0; bx < blocksX; bx++) {
+          const block = new Uint8Array(buf, src, blockSize); src += blockSize;
+          if (format === 'dxt1') decodeDXT1Block(block, full, bx * 4, by * 4, width);
+          else decodeDXT5Block(block, full, bx * 4, by * 4, width);
+        }
+      }
+      if (f === 1) rgba = full;
+      else {
+        rgba = new Uint8Array(ow * oh * 4); const n = f * f;
+        for (let oy = 0; oy < oh; oy++) for (let ox = 0; ox < ow; ox++) {
+          const acc = [0, 0, 0, 0];
+          for (let dy = 0; dy < f; dy++) { let o = ((oy * f + dy) * width + ox * f) * 4; for (let dx = 0; dx < f; dx++, o += 4) for (let c = 0; c < 4; c++) acc[c] += full[o + c]; }
+          const d = (oy * ow + ox) * 4; for (let c = 0; c < 4; c++) rgba[d + c] = acc[c] / n;
+        }
       }
     }
-    const tex = new THREE.DataTexture(rgba, width, height, THREE.RGBAFormat);
+    const tex = new THREE.DataTexture(rgba, ow, oh, THREE.RGBAFormat);
     tex.needsUpdate = true; tex.flipY = false; tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true;
-    log('DDS OK: ' + file.name + ' ' + width + 'x' + height + ' (' + format + ')');
+    log('DDS OK: ' + file.name + ' ' + ow + 'x' + oh + ' (' + format + ')');
     return tex;
   }
 
   async function loadTexture(file) {
+    if (texCache.has(file)) return texCache.get(file);
+    const t = await loadTexture0(file);
+    if (t) texCache.set(file, t);
+    return t;
+  }
+
+  async function loadTexture0(file) {
     if (/\.dds$/i.test(file.name)) {
       try { return await loadDDSTexture(file); } catch (e) { log('DDS lỗi: ' + e.message); return null; }
     }
@@ -421,12 +558,42 @@
         if (m) { kind = 'ib'; key = m[1]; f._sub = m[2] || ''; }
       }
       if (kind && key) {
-        if (!groups[key]) groups[key] = { key, part: classifyPart(key), pos: null, blend: null, tex: null, ibs: [], source: null };
-        if (kind === 'ib') groups[key].ibs.push(f);
-        else groups[key][kind] = f;
+        const gk = (f._variant || '') + '\u0000' + key;
+        if (!groups[gk]) groups[gk] = { key, variant: f._variant || '', part: classifyPart(key), pos: null, blend: null, tex: null, ibs: [], source: null };
+        if (kind === 'ib') groups[gk].ibs.push(f);
+        else groups[gk][kind] = f;
       }
     }
     return Object.values(groups).filter(g => g.pos && g.ibs.length);
+  }
+
+  // Detect IB format (R16_UINT vs R32_UINT) and drop degenerate triangles.
+  function readIndices(ibuf, vcount, name) {
+    const len = ibuf.byteLength;
+    const scan = (arr) => { let m = 0; for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i]; return m; };
+    const copy = len - (len % 4);
+    const a32 = (len >= 12 && len % 4 === 0) ? new Uint32Array(ibuf.slice(0, copy)) : null;
+    const a16 = (len % 2 === 0) ? new Uint16Array(ibuf.slice(0, len)) : null;
+    const ok32 = a32 && a32.length % 3 === 0 && scan(a32) < vcount;
+    const ok16 = a16 && a16.length % 3 === 0 && scan(a16) < vcount;
+    let arr = null, fmt = '';
+    if (ok32 && ok16) {
+      // ambiguous: real R32 data read as R16 has every odd entry == 0
+      let oddZero = true;
+      for (let i = 1; i < a16.length; i += 2) if (a16[i] !== 0) { oddZero = false; break; }
+      if (oddZero) { arr = a32; fmt = 'R32'; } else { arr = a16; fmt = 'R16'; }
+    } else if (ok32) { arr = a32; fmt = 'R32'; }
+    else if (ok16) { arr = a16; fmt = 'R16'; }
+    else { log('IB ' + name + ' lệch (vcount=' + vcount + ') → bỏ'); return null; }
+    // remove degenerate triangles
+    const out = new Uint32Array(arr.length); let k = 0, bad = 0;
+    for (let i = 0; i + 2 < arr.length; i += 3) {
+      const x = arr[i], y = arr[i + 1], z = arr[i + 2];
+      if (x === y || y === z || x === z) { bad++; continue; }
+      out[k++] = x; out[k++] = y; out[k++] = z;
+    }
+    log('IB ' + name + ' ' + fmt + ' · ' + (k / 3) + ' tri' + (bad ? ' (bỏ ' + bad + ' tam giác suy biến)' : ''));
+    return out.subarray(0, k);
   }
 
   async function buildGroup(g, texFiles, tag) {
@@ -463,29 +630,24 @@
         (g.part === 'face' && /face|head.*(diffuse|albedo|color)/i.test(tn));
     });
     candidates.sort((a, b) => {
-      const score = (n) => {
-        let s = 0;
+      const score = (n, f) => {
+        let s = (f._variant === g.variant) ? 5 : 0;
         if (/diffuse|albedo|basecolor|color/i.test(n) && !/light/i.test(n)) s += 20;
         if (/lightmap|light_map|lm\b/i.test(n)) s -= 15;
         if (/normal|bump|specular|metal/i.test(n)) s -= 10;
         if (/\.png|\.jpe?g/i.test(n)) s += 2;
         return s;
       };
-      return score(b.name) - score(a.name);
+      return score(b.name, b) - score(a.name, a);
     });
     if (candidates.length) matMap = await loadTexture(candidates[0]);
 
     const meshes = [];
     for (const ibFile of g.ibs) {
       const ibuf = await ibFile.arrayBuffer();
-      let ic = Math.floor(ibuf.byteLength / 2), indices = new Uint16Array(ic), max = 0;
-      const idv = new DataView(ibuf);
-      for (let i = 0; i < ic; i++) { const n = idv.getUint16(i * 2, true); indices[i] = n; if (n > max) max = n; }
-      if (max >= vcount) {
-        ic = Math.floor(ibuf.byteLength / 4); indices = new Uint32Array(ic); max = 0;
-        for (let i = 0; i < ic; i++) { const n = idv.getUint32(i * 4, true); indices[i] = n; if (n > max) max = n; }
-      }
-      if (max >= vcount) { log('IB ' + ibFile.name + ' lệch → bỏ'); continue; }
+      const indices = readIndices(ibuf, vcount, ibFile.name);
+      if (!indices) continue;
+      const ic = indices.length;
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
@@ -506,16 +668,23 @@
     return meshes;
   }
 
-  async function build() {
+  async function build(opts) {
+    opts = opts || {};
     try {
       if (!filesMod.length && !filesBase.length) throw new Error('Chưa nạp file nào.');
-      $('#mg-log').textContent = '';
+      if (!opts.keepLog) $('#mg-log').textContent = '';
       log('Bắt đầu ghép…');
       if (modelRoot) scene.remove(modelRoot);
       modelRoot = new THREE.Group();
 
-      const groupsMod = groupHSR(filesMod);
-      const groupsBase = groupHSR(filesBase);
+      const vm = selectVariant(groupHSR(filesMod));
+      const vb = selectVariant(groupHSR(filesBase));
+      const groupsMod = vm.groups, groupsBase = vb.groups;
+      const hasVar = vm.variants.length > 1;
+      $('#mg-tits').disabled = $('#mg-ass').disabled = !hasVar;
+      $('#mg-variant').textContent = hasVar
+        ? 'Body-size: ' + vm.sel + ' (' + vm.variants.length + ' biến thể · swapvar=' + ((tog.tits ? 1 : 0) + (tog.ass ? 2 : 0)) + ')' : '';
+      if (hasVar) log('Biến thể đang dùng: ' + vm.sel);
       groupsMod.forEach(g => g.source = 'mod');
       groupsBase.forEach(g => g.source = 'base');
 
@@ -580,9 +749,9 @@
       const center = box.getCenter(new THREE.Vector3());
       modelRoot.position.sub(center);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
-      camera.position.set(maxDim * 1.8, maxDim * 1.2, maxDim * 2);
+      if (!opts.keepCam) camera.position.set(maxDim * 1.8, maxDim * 1.2, maxDim * 2);
       camera.near = maxDim / 10000; camera.far = maxDim * 100; camera.updateProjectionMatrix();
-      camera.lookAt(0, 0, 0);
+      if (!opts.keepCam) camera.lookAt(0, 0, 0);
 
       const parts = {};
       modelRoot.children.forEach(c => { parts[c.userData.part] = (parts[c.userData.part] || 0) + 1; });
@@ -627,7 +796,7 @@
     s.onload = run; s.onerror = () => log('Không tải GLTFExporter'); document.head.append(s);
   }
 
-  function applyToPMX() {
+  function applyToPMX(silent) {
     if (!modelRoot) { log('Chưa dựng model'); return; }
     const bodyOnly = new THREE.Group();
     // Body + hair from mod overlay; face stays on PMX
@@ -646,7 +815,7 @@
     }
     if (window.__vncApply3dmBody) {
       const ok = window.__vncApply3dmBody(bodyOnly);
-      if (ok) log('Đã áp Body+Hair 3DM lên PMX (overlay). Face + xương + VMD vẫn từ PMX gốc.');
+      if (ok) { applied = true; log(silent === true ? 'Đã cập nhật overlay theo body-size.' : 'Đã áp Body+Hair 3DM lên PMX (overlay). Face + xương + VMD vẫn từ PMX gốc.'); }
       else log('Áp thất bại — hãy mở PMX gốc trước ở app chính.');
     } else {
       log('Bridge PMX chưa sẵn sàng. Tải lại trang (v44).');
